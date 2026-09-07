@@ -42,6 +42,7 @@ export * from './brand.ts'
 export * from './error.ts'
 export * from './api-key.ts'
 export * from './types.ts'
+export * from './pricing.ts'
 export * from './content.ts'
 export * from './assistant-stream.ts'
 export * from './message.ts'
@@ -779,6 +780,14 @@ export class LlmRuntime extends TypertRemoteService {
         'INVALID_MODEL_MAX_TOKENS',
       )
     }
+    const pricing = resolved.pricing
+    if (pricing !== undefined && [pricing.input, pricing.output, pricing.cacheRead, pricing.cacheWrite]
+      .some(rate => rate !== undefined && (!Number.isFinite(rate) || rate < 0))) {
+      throw new LlmError(
+        `adapter returned invalid pricing metadata for provider "${provider}" model "${model}"`,
+        'INVALID_MODEL_PRICING',
+      )
+    }
     const info: LlmResolvedModelInfo = {
       provider,
       id: model,
@@ -787,6 +796,7 @@ export class LlmRuntime extends TypertRemoteService {
       ...inputModalities === undefined ? {} : { inputModalities },
       ...context === undefined ? {} : { context: { contextWindow: context.contextWindow } },
       ...defaultMaxTokens === undefined ? {} : { defaultMaxTokens },
+      ...pricing === undefined ? {} : { pricing: { ...pricing } },
     }
     const reasoning = resolved.reasoning
     if (reasoning === undefined) return info

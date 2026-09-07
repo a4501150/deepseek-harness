@@ -14,7 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
-import type { ModelModality, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
+import type { LlmModelPricing, ModelModality, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-fs'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
@@ -172,6 +172,12 @@ const catalogModel: z<DeepSeekCatalogModel> = z.object({
   inputModalities: z.array(z.union(MODEL_MODALITIES)).min(1).default(['text']),
   imagePixelBudget: z.union([z.number().step(1).min(1), 'low']),
   imageMaxBytes: z.number().step(1).min(1),
+  pricing: z.object({
+    input: z.natural(),
+    output: z.natural(),
+    cacheRead: z.natural(),
+    cacheWrite: z.natural(),
+  }),
 })
 
 export const Config: z<Config> = z.object({
@@ -201,6 +207,33 @@ export const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
 /** Environment variable naming this provider's endpoint, honored only from trusted layers. */
 const BASE_URL_ENV = 'DEEPSEEK_BASE_URL'
+
+/** The pricing fields a configured block may declare. */
+const PRICING_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const
+
+/**
+ * The pricing table one catalog entry declares, validated.
+ *
+ * Absent and empty mean the same thing — the schema materializes `{}` for an
+ * absent key — and both state no rate, so the model keeps no pricing.
+ * @param model - the raw catalog entry.
+ * @returns the declared per-Mtok rates, or undefined when the entry states none.
+ * @throws Error when a declared rate is not a finite non-negative number.
+ */
+function declaredPricing(model: DeepSeekCatalogModel): LlmModelPricing | undefined {
+  const pricing = model.pricing
+  if (pricing === undefined) return undefined
+  const declared: Partial<Record<keyof LlmModelPricing, number>> = {}
+  for (const field of PRICING_FIELDS) {
+    const rate = pricing[field]
+    if (rate === undefined) continue
+    if (!Number.isFinite(rate) || rate < 0) {
+      throw new Error(`llm-deepseek: catalog model "${model.id}" pricing.${field} must be a finite non-negative number`)
+    }
+    declared[field] = rate
+  }
+  return Object.keys(declared).length === 0 ? undefined : declared
+}
 
 /**
  * One resolution's complete request facts. Connection and credential facts
@@ -259,6 +292,7 @@ function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): Dee
       throw new Error(`llm-deepseek: catalog model "${model.id}" imageMaxBytes must be a positive safe integer`)
     }
     if (seen.has(model.id)) throw new Error(`llm-deepseek: duplicate catalog model "${model.id}"`)
+    const pricing = declaredPricing(model)
     seen.add(model.id)
     return {
       id: model.id,
@@ -266,6 +300,7 @@ function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): Dee
       ...model.description === undefined ? {} : { description: model.description },
       ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
       ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
+      ...pricing === undefined ? {} : { pricing },
       inputModalities: [...inputModalities],
       ...hasImage
         ? {

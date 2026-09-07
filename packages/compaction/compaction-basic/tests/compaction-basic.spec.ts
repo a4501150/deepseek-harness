@@ -13,7 +13,7 @@ import {
   resolveTargetPolicy,
 } from '@deepseek-ai/dsh-compaction-basic/src/config.ts'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import LlmRuntime, { createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, createToolResultMessage, LlmAdapter , createMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, CONTEXT_WINDOW_EXCEEDED_CODE, createToolResultMessage, LlmAdapter , createMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   GenerateOptions,
@@ -28,6 +28,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import { agentEvents, type Agent, type RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import ToolResultPruner from '@deepseek-ai/dsh-compaction-tool-result-pruner'
+import ModelRoutingConfig from '@deepseek-ai/dsh-model-routing'
 
 const SIGNAL = new AbortController().signal
 const MODEL = 'test-model'
@@ -1133,6 +1134,16 @@ class ScriptedAdapter extends LlmAdapter {
     super()
   }
 
+  // Declared so a routed selection's reasoning effort reaches the request instead of failing validation.
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      reasoning: { efforts: [{ id: ReasoningEffortId('low'), name: 'Low' }] },
+    })
+  }
+
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.lastOptions = options
     for (const [index, block] of this.blocks.entries()) {
@@ -1231,6 +1242,41 @@ describe('default one-shot summarizer', () => {
     })
     const instruction = adapter.lastOptions?.messages.at(-1)?.content[0]
     expect(instruction?.type === 'text' ? instruction.text : '').toContain('## Primary Request and Intent')
+  })
+
+  it('routes the compaction purpose over the session fallback and carries its effort', async () => {
+    const { ctx, adapter, compact } = await summarizerHarness(
+      [{ type: 'text', text: 'summary' }], undefined, 'routed-small',
+    )
+    await ctx.plugin(ModelRoutingConfig, {
+      purposes: { compaction: { provider: 'routed-small', model: 'routed-small', reasoningEffort: 'low' } },
+    })
+    await compact.runSummarize(promptInput('transcript'), agent(conversation(1), 'fallback'), SIGNAL)
+
+    expect(adapter.lastOptions).toMatchObject({
+      provider: 'routed-small',
+      model: 'routed-small',
+      reasoningEffort: 'low',
+      purpose: 'compaction',
+    })
+  })
+
+  it('keeps explicit summarization fields above a routing selection', async () => {
+    const { ctx, adapter, compact } = await summarizerHarness(
+      [{ type: 'text', text: 'summary' }], undefined, MODEL, {
+        auto: false,
+        summarizationProvider: MODEL,
+        summarizationModel: MODEL,
+      },
+    )
+    // The routed route names no mounted adapter, so winning here would fail the call loudly.
+    await ctx.plugin(ModelRoutingConfig, {
+      purposes: { compaction: { provider: 'never-served-route', model: 'never-served-model' } },
+    })
+    await compact.runSummarize(promptInput('transcript'), agent(conversation(1), 'fallback'), SIGNAL)
+
+    expect(adapter.lastOptions).toMatchObject({ provider: MODEL, model: MODEL })
+    expect('reasoningEffort' in (adapter.lastOptions ?? {})).toBe(false)
   })
 
   it('replays the conversation prefix and appends the instruction as the final message', async () => {

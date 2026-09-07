@@ -31,9 +31,10 @@ core 分组提供 DeepSeek Harness 的产品 API 主干：仅追加的会话日�
 | [`agent-tool-presentation/`](agent-tool-presentation/README.zh.md) | 为 preset 提供按 agent 的工具呈现方式选择器 | 无 ctx key |
 | [`agent/`](agent/README.zh.md) | 插件面向编程的 `Agent` 句柄，以及其实时注册表与事件 | `ctx.agents` |
 | [`agent-default-model/`](agent-default-model/README.zh.md) | 入口对全新 agent 应用的部署默认模型选择 | `ctx.agentDefaultModel` |
+| [`model-routing/`](model-routing/README.zh.md) | 后台模型工作（压缩、会话标题）的按 purpose 路由 | `ctx.modelRouting` |
 | [`agent-loop/`](agent-loop/README.zh.md) | 默认 agent 驱动器：创建 agent 并运行轮次与步骤生命周期 | `ctx.agentLoop` |
 
-`scope` 提供共享作用域原语；`agent` 拥有公开的 `Agent` 约定，而 `agent-loop` 是其默认实现，因此扩展插件依赖 `agent`，驱动器保持可替换。`agent-default-model` 拥有会话自身没有选择时由入口应用的部署选择。可运行组合位于 [`packages/bundle`](../bundle/README.zh.md)；本分组只拥有可替换的主干组件。
+`scope` 提供共享作用域原语；`agent` 拥有公开的 `Agent` 约定，而 `agent-loop` 是其默认实现，因此扩展插件依赖 `agent`，驱动器保持可替换。`agent-default-model` 拥有会话自身没有选择时由入口应用的部署选择，`model-routing` 拥有盖 purpose 的调用在自身回退前查询的后台路由。可运行组合位于 [`packages/bundle`](../bundle/README.zh.md)；本分组只拥有可替换的主干组件。
 
 -----
 

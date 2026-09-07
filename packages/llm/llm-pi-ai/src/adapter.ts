@@ -58,7 +58,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import type { ResolvedPiAiProviderProfile } from './config.ts'
+import type { PiAiReasoningSummary, ResolvedPiAiProviderProfile } from './config.ts'
 import { toPiContext } from './context.ts'
 import { toStreamChunks } from './stream.ts'
 
@@ -126,8 +126,42 @@ function profileOptions(
     ...profile.transport === undefined ? {} : { transport: profile.transport },
     ...profile.timeoutMs === undefined ? {} : { timeoutMs: profile.timeoutMs },
     ...profile.websocketConnectTimeoutMs === undefined ? {} : { websocketConnectTimeoutMs: profile.websocketConnectTimeoutMs },
+    // The provider-scoped overlay rides on every request so pi-ai's own
+    // discovery (region, profile, project, proxy) reads it in place of the
+    // process environment. An empty overlay behaves as none.
+    ...profile.env === undefined || Object.keys(profile.env).length === 0
+      ? {}
+      : { env: profile.env },
     // The agent recovery layer owns visible attempts; one adapter call is one SDK attempt.
     maxRetries: 0,
+  }
+}
+
+/**
+ * The stream option that decides whether the finished request body carries a
+ * `reasoning.summary` mode. pi-ai's `streamSimple` forwards no summary of its
+ * own, but each Responses implementation injects its own `auto` default into
+ * the built body, so the payload hook every implementation calls is the one
+ * place the deployment's choice can land: a configured mode merges into the
+ * reasoning the builder produced, and `off` — like an unset field — strips the
+ * key entirely, never sending the word itself, which the provider rejects.
+ * A request left with a summary but no `reasoning` parameter gains
+ * `{ summary }` alone, which the protocol reads as the provider's own default
+ * effort.
+ */
+function reasoningSummaryOption(
+  summary: PiAiReasoningSummary | undefined,
+): { onPayload: (payload: unknown) => unknown } {
+  return {
+    onPayload: (payload) => {
+      const body = payload as { reasoning?: Record<string, unknown> }
+      if (summary !== undefined && summary !== 'off') {
+        return { ...body, reasoning: { ...body.reasoning, summary } }
+      }
+      if (body.reasoning?.summary === undefined) return payload
+      const { summary: _piAiDefault, ...reasoning } = body.reasoning
+      return { ...body, reasoning }
+    },
   }
 }
 
@@ -295,10 +329,14 @@ export class PiAiAdapter extends LlmAdapter {
   private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
-    const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+    const defaultLevel = describableReasoningLevel(
+      resolvedModel,
+      profile.defaultReasoningEfforts.get(model) ?? profile.reasoning,
+    )
     // Only a cap the deployment configured is a request default; the
     // catalog's `maxTokens` sizes the model and stops there.
     const configuredMaxTokens = profile.configuredMaxTokens.get(model)
+    const pricing = profile.configuredPricing.get(model)
     return {
       provider,
       id: model,
@@ -306,6 +344,7 @@ export class PiAiAdapter extends LlmAdapter {
       inputModalities: [...resolvedModel.input],
       context: { contextWindow: resolvedModel.contextWindow },
       ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
+      ...pricing === undefined ? {} : { pricing },
       ...reasoningInfo(resolvedModel, defaultLevel),
     }
   }
@@ -338,7 +377,7 @@ export class PiAiAdapter extends LlmAdapter {
     const model = this.modelOf(snapshot, options.provider, options.model)
     const reasoning = resolveReasoningLevel(
       model,
-      options.reasoningEffort ?? profile.reasoning,
+      options.reasoningEffort ?? profile.defaultReasoningEfforts.get(options.model) ?? profile.reasoning,
     )
     const apiKey = await this.config.resolveApiKey(options.provider, profile)
 
@@ -374,6 +413,7 @@ export class PiAiAdapter extends LlmAdapter {
         }, onReplayDegrade)
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
+        ...reasoningSummaryOption(profile.configuredReasoningSummary.get(options.model)),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },

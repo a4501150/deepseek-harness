@@ -1083,10 +1083,15 @@ export interface DeepSeekCatalogModel {
   imagePixelBudget?: number | 'low'
   /** Encoded-byte target for one deterministic request preview; the smallest quality-ladder output is used when no quality fits. */
   imageMaxBytes?: number
+  /**
+   * Request pricing in USD per million tokens, surfaced through resolved model
+   * metadata so consumers can estimate spend; omission declares no rates.
+   */
+  pricing?: LlmModelPricing
 }
 ```
 
-依赖：[`ModelModality`](../packages/llm/llm/src/index.ts) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts)
+依赖：[`LlmModelPricing`](../packages/llm/llm/src/index.ts) · [`ModelModality`](../packages/llm/llm/src/index.ts) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts)
 
 来源：[`packages/llm/llm-deepseek/src/index.ts:125`](../packages/llm/llm-deepseek/src/index.ts)
 
@@ -1169,6 +1174,13 @@ export interface PiAiProviderProfile {
   defaultInput?: PiAiModality[]
   /** Provider request headers, validated against Fetch when the profile resolves; Harness attribution wins reserved names. */
   headers?: Record<string, string>
+  /**
+   * Provider-scoped environment values this route's requests read in place of
+   * the process environment: how a deployment pins an AWS region or profile, a
+   * Vertex project or location, or a proxy per route without changing the
+   * process environment every other route shares.
+   */
+  env?: Record<string, string>
   /** Provider-neutral pi-ai reasoning level. */
   reasoning?: ModelThinkingLevel
   /** Token budgets used by reasoning providers that support them. */
@@ -1238,6 +1250,26 @@ export interface PiAiModelProfile {
   reasoningEfforts?: false | PiAiReasoningEfforts
   /** pi-ai wire-compatibility switches for this model, winning over the route's per field; one its protocol does not declare is refused. */
   compat?: PiAiCompatProfile
+  /**
+   * Request pricing in USD per million tokens for this exact route, surfaced
+   * through the harness's resolved model metadata so consumers can estimate
+   * spend. The harness never guesses one and never reads the installed pi-ai
+   * catalog's cost metadata.
+   */
+  pricing?: LlmModelPricing
+  /**
+   * Effort this model gets when a caller names none, overriding the route's
+   * `reasoning` default; it must name a level this model offers. A route
+   * whose models carry different provider defaults declares one per model.
+   */
+  defaultReasoningEffort?: ModelThinkingLevel
+  /**
+   * Reasoning summary mode this route's requests send for this model; refused
+   * on a model whose resolved protocol does not read a `reasoning` parameter.
+   * Unset and `off` both omit the parameter, so the provider runs no
+   * summarization pass and reports no visible thinking.
+   */
+  reasoningSummary?: PiAiReasoningSummary
 }
 
 /**
@@ -1354,6 +1386,16 @@ export type PiAiModality = Model<Api>['input'][number]
  */
 export type PiAiReasoningEfforts = Partial<Record<ModelThinkingLevel, string | null>>
 
+/**
+ * Reasoning summary mode a deployment forces onto every request for one
+ * model: the wire values the Responses protocols' `reasoning.summary`
+ * parameter accepts, plus `off`, a config-only value that omits the
+ * parameter from the request (the word `off` is never sent — the provider
+ * rejects it). A model without the field is off too: the adapter strips the
+ * `auto` default pi-ai's own request builder injects.
+ */
+export type PiAiReasoningSummary = 'auto' | 'concise' | 'detailed' | 'off'
+
 /** One reasoning-dispatch wire format a profile may name. */
 export type PiAiThinkingFormat = NonNullable<OpenAICompletionsCompat['thinkingFormat']>
 
@@ -1361,9 +1403,9 @@ export type PiAiThinkingFormat = NonNullable<OpenAICompletionsCompat['thinkingFo
 export type PiAiThinkingTokenBudgetField = NonNullable<OpenAICompletionsCompat['thinkingTokenBudgetField']>
 ```
 
-依赖：`Api`（`@earendil-works/pi-ai`）· `CacheRetention`（`@earendil-works/pi-ai`）· `Model`（`@earendil-works/pi-ai`）· `ModelThinkingLevel`（`@earendil-works/pi-ai`）· `OpenAICompletionsCompat`（`@earendil-works/pi-ai`）· [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets`（`@earendil-works/pi-ai`）· `Transport`（`@earendil-works/pi-ai`)
+依赖：`Api`（`@earendil-works/pi-ai`）· `CacheRetention`（`@earendil-works/pi-ai`）· `LlmModelPricing`（`@deepseek-ai/dsh-llm/types`）· `Model`（`@earendil-works/pi-ai`）· `ModelThinkingLevel`（`@earendil-works/pi-ai`）· `OpenAICompletionsCompat`（`@earendil-works/pi-ai`）· [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets`（`@earendil-works/pi-ai`）· `Transport`（`@earendil-works/pi-ai`）
 
-来源：[`packages/llm/llm-pi-ai/src/config.ts:217`](../packages/llm/llm-pi-ai/src/config.ts)
+来源：[`packages/llm/llm-pi-ai/src/config.ts:243`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 
@@ -1585,6 +1627,40 @@ export interface Config {
 ```
 
 来源：[`packages/feedback/message-feedback/src/index.ts:39`](../packages/feedback/message-feedback/src/index.ts)
+
+<a id="deepseek-aidsh-model-routing"></a>
+
+## `@deepseek-ai/dsh-model-routing`
+
+```ts config-catalog
+/** Composition entry for the routing service; every block is optional. */
+export type Config = ModelRoutingSettings
+
+/** Deployment routing for background model work, layered over the composition entry. */
+export interface ModelRoutingSettings {
+  /** Selection for small, fast background work; the tier every purpose falls back to. */
+  smallFast?: ModelRoutingSelection
+  /** Exact-purpose selections, winning over the tier. */
+  purposes?: {
+    /** Conversation-summarization selection, consulted by `purpose: 'compaction'`. */
+    compaction?: ModelRoutingSelection
+    /** Session-title selection, consulted by `purpose: 'session-title'`. */
+    sessionTitle?: ModelRoutingSelection
+  }
+}
+
+/** Stored provider route, model id, and optional reasoning effort. */
+export interface ModelRoutingSelection {
+  /** Registered provider route. */
+  provider?: string
+  /** Provider-owned model id. */
+  model?: string
+  /** Adapter-owned reasoning effort, or provider/default behavior when absent. */
+  reasoningEffort?: string
+}
+```
+
+来源：[`packages/core/model-routing/src/index.ts:60`](../packages/core/model-routing/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 
@@ -2130,20 +2206,34 @@ export type Config = SessionTitleLlmConfig
 ## `@deepseek-ai/dsh-settings-file`
 
 ```ts config-catalog
-/** Plugin config: file location and hot-reload behavior. */
+/** Plugin config: file locations, namespace routing, and hot-reload behavior. */
 export interface Config {
-  /** Settings document path; defaults to `settings.yaml` under the harness home. */
+  /** Primary settings document path; defaults to `settings.yaml` under the harness home. */
   path?: string
   /** Harness home used when `path` is omitted; defaults to `$DSH_HOME` or `~/.dsh`. */
   dshHome?: string
-  /** Watch the document and hot-publish external edits; defaults to true. */
+  /**
+   * Split documents owning the listed namespaces, such as a
+   * `model-settings.yaml` carrying the model-related sections. The primary
+   * document owns every namespace no split lists.
+   */
+  documents?: SettingsSplitDocument[]
+  /** Watch the documents and hot-publish external edits; defaults to true. */
   watch?: boolean
   /** Watcher write-settle window in milliseconds; defaults to 100. */
   debounceMs?: number
 }
+
+/** One split document and the namespaces it owns outright. */
+export interface SettingsSplitDocument {
+  /** Split document path; a relative path resolves against the primary document's directory. */
+  path: string
+  /** Namespaces this document owns; a section for one of them anywhere else is a ghost the provider migrates or ignores. */
+  namespaces: string[]
+}
 ```
 
-来源：[`packages/settings/settings-file/src/index.ts:22`](../packages/settings/settings-file/src/index.ts)
+来源：[`packages/settings/settings-file/src/index.ts:32`](../packages/settings/settings-file/src/index.ts)
 
 <a id="deepseek-aidsh-shell-env"></a>
 

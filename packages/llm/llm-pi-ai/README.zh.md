@@ -76,6 +76,7 @@ kind: "package-reference"
 | `displayName` | 提供方名 | 选择器界面显示的标签 |
 | `api` | 目录协议 | 协议格式；仅目录不提供的路由需要 |
 | `baseURL` | 目录端点 | 路由上所有模型的端点 |
+| `env` | 无 | 本路由请求读取的提供方级环境覆盖，优先于进程环境：如 `AWS_REGION`、`AWS_PROFILE`、`GOOGLE_CLOUD_PROJECT`、代理等 |
 | `models` | 已安装目录 | 整体替换路由目录；每个条目从已安装模型取默认值 |
 | `modelOverrides` | 无 | 重塑个别已安装目录模型，而不替换其余模型 |
 | `compat` | 目录检测 | 无法识别端点的协议兼容开关 |
@@ -96,9 +97,11 @@ pi-ai 提供登录的提供方可以通过 harness 授权 seam 登录：流程�
 
 profile 的 `models` 列表会替换而非扩展路由的已安装目录；每个条目从同 id 已安装模型取未设置字段的默认值，因此把路由收窄到两个模型、修正一个容量或添加比已安装目录更新的模型都是一行编辑。`modelOverrides` 无需该代价即可重塑个别已安装目录模型——修正一个模型，保留其余三十七个——当它与 `models` 列表并存、位于手工声明路由上、或点名目录未描述的模型时会被拒绝，因为静默不变的模型会成为别人日后寻找的拼写错误。
 
+模型条目或 `modelOverrides` 值可以声明 `pricing` 块——按百万 token 计的美元费率 `input`、`output`、`cacheRead`、`cacheWrite`——经 `ctx.llm.resolveModelInfo()` 与浏览器模型目录上报，供消费方估算开销。只有声明的费率才是部署事实：已安装 pi-ai 目录自带的成本元数据从不被读取，空块不声明任何费率，没有定价的模型不上报成本而非猜测成本。
+
 ### 带推理与协议兼容运行
 
-`reasoningEfforts` 声明模型可选择的 thinking 等级：每个键都是选择器提供的等级，其值是该等级过线的拼写，因此 `max: ultra` 可以为拥有自有词汇的网关重命名等级。省略该字段时保留已安装目录条目的能力；`false` 声明非推理模型。对于 pi-ai 无法识别的端点，`compat` 开关重塑请求——哪个角色携带系统提示词、哪个字段限制输出、thinking 等级如何传递——可逐路由、逐模型配置。条目与已安装目录都没有尺寸的模型，会采用路由的 `defaultContextWindow` 与 `defaultMaxTokens` 回退值。
+`reasoningEfforts` 声明模型可选择的 thinking 等级：每个键都是选择器提供的等级，其值是该等级过线的拼写，因此 `max: ultra` 可以为拥有自有词汇的网关重命名等级。省略该字段时保留已安装目录条目的能力；`false` 声明非推理模型。条目的 `defaultReasoningEffort` 为该模型指定调用方未命名等级时请求使用的等级，位置高于路由的 `reasoning` 默认值，且必须是该模型提供的等级。`reasoningSummary` 声明该模型请求发送的 summary 模式（`auto`、`concise` 或 `detailed`）；未设置与 `off` 都会省略 `reasoning.summary`——省略就是默认，适配器会剥掉 pi-ai 请求构建器注入的 `auto` 默认值——提供方因此不运行摘要过程，也不报告可见的 thinking。协议从不读取 `reasoning` 参数的模型上声明它会被拒绝。对于 pi-ai 无法识别的端点，`compat` 开关重塑请求——哪个角色携带系统提示词、哪个字段限制输出、thinking 等级如何传递——可逐路由、逐模型配置。条目与已安装目录都没有尺寸的模型，会采用路由的 `defaultContextWindow` 与 `defaultMaxTokens` 回退值。
 
 对于自托管 Chat Completions 端点，`thinkingTokenBudgetField` 选择推理预算参数，`vllmPriority` 在服务端启用优先级调度时设置整数调度优先级。模板参数接受 `$var: thinking.budget`。`openai-responses` 网关可设置 `supportsMaxOutputTokens: false` 来省略 `max_output_tokens`；Azure 与 Codex 传输会忽略这个共享兼容字段。这些控制均需显式启用；目录拥有的 Anthropic effort 和回退能力不是可配置开关。
 

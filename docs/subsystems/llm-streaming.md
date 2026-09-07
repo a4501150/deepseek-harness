@@ -562,6 +562,12 @@ interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
+  /**
+   * Deployment-declared request pricing for this exact route. Absent means no
+   * pricing is configured; the harness never guesses one and never reads the
+   * pi-ai catalog's own cost metadata.
+   */
+  pricing?: LlmModelPricing
 }
 ```
 

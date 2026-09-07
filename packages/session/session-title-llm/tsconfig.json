@@ -10,6 +10,8 @@
     { "path": "../../../vendor/cordis" },
     { "path": "../../../vendor/schemastery" },
     { "path": "../../llm/llm" },
+    { "path": "../../core/agent" },
+    { "path": "../../core/model-routing" },
     { "path": "../../util/timeout" },
     { "path": "../session-title" }
   ]

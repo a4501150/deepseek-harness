@@ -14,6 +14,7 @@
 
 import { builtinProviders, getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all'
 import type { BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai'
 import type {
   AnthropicMessagesCompat,
   Api,
@@ -28,6 +29,7 @@ import type {
   Provider,
   ThinkingLevelMap,
 } from '@earendil-works/pi-ai'
+import type { LlmModelPricing } from '@deepseek-ai/dsh-llm/types'
 
 /**
  * Pricing for a model the installed catalog does not describe. The harness
@@ -212,6 +214,31 @@ export function catalogModels(provider: string): Map<string, Model<Api>> {
  * from the dict is not offered.
  */
 export type PiAiReasoningEfforts = Partial<Record<ModelThinkingLevel, string | null>>
+
+/**
+ * Reasoning summary mode a deployment forces onto every request for one
+ * model: the wire values the Responses protocols' `reasoning.summary`
+ * parameter accepts, plus `off`, a config-only value that omits the
+ * parameter from the request (the word `off` is never sent — the provider
+ * rejects it). A model without the field is off too: the adapter strips the
+ * `auto` default pi-ai's own request builder injects.
+ */
+export type PiAiReasoningSummary = 'auto' | 'concise' | 'detailed' | 'off'
+
+/** The nameable summary modes, in wire order; the Responses protocols' own enum plus the config-only omission `off`. */
+export const REASONING_SUMMARIES = ['auto', 'concise', 'detailed', 'off'] as const
+
+/**
+ * Wire protocols whose request builder sends a `reasoning` parameter, and so
+ * can carry a summary mode. pi-ai's `streamSimple` does not forward a summary
+ * of its own, so the adapter applies the configured mode through the payload
+ * hook each of these implementations calls with the finished request body.
+ */
+const REASONING_SUMMARY_PROTOCOLS: readonly string[] = [
+  'openai-responses',
+  'azure-openai-responses',
+  'openai-codex-responses',
+]
 
 /**
  * Whether one pi-ai compat field is configurable on a profile.
@@ -607,6 +634,26 @@ export interface PiAiModelProfile {
   reasoningEfforts?: false | PiAiReasoningEfforts
   /** pi-ai wire-compatibility switches for this model, winning over the route's per field; one its protocol does not declare is refused. */
   compat?: PiAiCompatProfile
+  /**
+   * Request pricing in USD per million tokens for this exact route, surfaced
+   * through the harness's resolved model metadata so consumers can estimate
+   * spend. The harness never guesses one and never reads the installed pi-ai
+   * catalog's cost metadata.
+   */
+  pricing?: LlmModelPricing
+  /**
+   * Effort this model gets when a caller names none, overriding the route's
+   * `reasoning` default; it must name a level this model offers. A route
+   * whose models carry different provider defaults declares one per model.
+   */
+  defaultReasoningEffort?: ModelThinkingLevel
+  /**
+   * Reasoning summary mode this route's requests send for this model; refused
+   * on a model whose resolved protocol does not read a `reasoning` parameter.
+   * Unset and `off` both omit the parameter, so the provider runs no
+   * summarization pass and reports no visible thinking.
+   */
+  reasoningSummary?: PiAiReasoningSummary
 }
 
 /**
@@ -794,6 +841,35 @@ function resolveModelCompat(
   return { compat: { ...inherited, ...configured } as ModelCompat }
 }
 
+/** The pricing fields a configured block may declare. */
+const PRICING_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite'] as const
+
+/**
+ * Validate one entry's configured pricing table.
+ *
+ * Absent and empty mean the same thing — the schema materializes `{}` for an
+ * absent key, exactly what an emptied block looks like — and both state no
+ * rate, so the model resolves with no pricing. Only rates the profile named
+ * are deployment facts; the installed catalog's cost metadata stays unread.
+ * @param provider - provider route key, for diagnostics.
+ * @param entry - the configured model entry.
+ * @returns the declared rates, or undefined when the entry states none.
+ */
+function declaredPricing(provider: string, entry: PiAiModelProfile): LlmModelPricing | undefined {
+  const pricing = entry.pricing
+  if (pricing === undefined) return undefined
+  const declared: Partial<Record<keyof LlmModelPricing, number>> = {}
+  for (const field of PRICING_FIELDS) {
+    const rate = pricing[field]
+    if (rate === undefined) continue
+    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0) {
+      invalid(provider, `model "${entry.id}" pricing.${field} must be a finite non-negative number`)
+    }
+    declared[field] = rate
+  }
+  return Object.keys(declared).length === 0 ? undefined : declared
+}
+
 /** One route's materialized catalog, plus the request caps its profile chose. */
 export interface RouteCatalog {
   /** The materialized models in configuration order. */
@@ -809,6 +885,22 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /**
+   * Request pricing tables this profile explicitly configured, by model id.
+   * Same explicit-configuration rule as `configuredMaxTokens`: a rate only the
+   * installed pi-ai catalog states is not a deployment fact and never lands
+   * here; an empty pricing block declares nothing and keeps the model silent.
+   */
+  configuredPricing: ReadonlyMap<string, LlmModelPricing>
+  /**
+   * Per-model effort defaults this profile explicitly configured, by model id;
+   * each overrides the route's `reasoning` default for that model.
+   */
+  defaultReasoningEfforts: ReadonlyMap<string, ModelThinkingLevel>
+  /**
+   * Reasoning summary modes this profile explicitly configured, by model id.
+   */
+  configuredReasoningSummary: ReadonlyMap<string, PiAiReasoningSummary>
 }
 
 /**
@@ -817,7 +909,8 @@ export interface RouteCatalog {
  * installed catalog unchanged, which is what keeps an existing
  * `providers: { deepseek: { apiKeyEnv: … } }` profile working untouched.
  * @param request - the route-level catalog facts.
- * @returns the materialized models and the explicitly configured request caps.
+ * @returns the materialized models plus the explicitly configured request caps
+ * pricing tables, per-model effort defaults, and summary modes.
  */
 export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   const { provider } = request
@@ -870,6 +963,9 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   }
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
+  const configuredPricing = new Map<string, LlmModelPricing>()
+  const defaultReasoningEfforts = new Map<string, ModelThinkingLevel>()
+  const configuredReasoningSummary = new Map<string, PiAiReasoningSummary>()
   const models = entries.map((entry) => {
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
     if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
@@ -899,7 +995,9 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, entry.maxTokens)
-    return {
+    const pricing = declaredPricing(provider, entry)
+    if (pricing !== undefined) configuredPricing.set(entry.id, pricing)
+    const model = {
       // The installed entry lays the floor, and the fields below override it.
       // Enumerating instead would silently drop every `Model` field this
       // package does not model — reasoning-level spellings, compatibility
@@ -918,6 +1016,24 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
       ...resolveModelReasoning(provider, entry, base),
       ...resolveModelCompat(provider, entry, request.compat, base, api),
     }
+    if (entry.reasoningSummary !== undefined) {
+      if (!REASONING_SUMMARY_PROTOCOLS.includes(api)) {
+        invalid(provider, `model "${entry.id}" sets reasoningSummary, which only ${REASONING_SUMMARY_PROTOCOLS.join(', ')} read;`
+          + ` this model resolves to the "${api}" protocol`)
+      }
+      configuredReasoningSummary.set(entry.id, entry.reasoningSummary)
+    }
+    if (entry.defaultReasoningEffort !== undefined) {
+      // pi-ai's own list: a non-reasoning model reports only `off`, which no
+      // default may name because it means "send nothing", not a level.
+      const offered = getSupportedThinkingLevels(model as Model<Api>).filter(level => level !== 'off')
+      if (!offered.some(level => level === entry.defaultReasoningEffort)) {
+        invalid(provider, `model "${entry.id}" sets defaultReasoningEffort "${entry.defaultReasoningEffort}",`
+          + ` which it does not offer; the model offers ${offered.length === 0 ? 'no reasoning level' : offered.join(', ')}`)
+      }
+      defaultReasoningEfforts.set(entry.id, entry.defaultReasoningEffort)
+    }
+    return model
   })
   // Per field, not per block: a route may default a switch its completions
   // models take beside one only its anthropic models do, and neither should
@@ -929,5 +1045,5 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     invalid(provider, `sets compat "${field}", but no model on the route speaks a protocol that takes it;`
       + ` it exists on ${takers.join(', ')}`)
   }
-  return { models, configuredMaxTokens }
+  return { models, configuredMaxTokens, configuredPricing, defaultReasoningEfforts, configuredReasoningSummary }
 }

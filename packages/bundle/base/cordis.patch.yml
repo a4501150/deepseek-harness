@@ -78,17 +78,28 @@
         provider: deepseek-official
         model: deepseek-v4-flash
 
+    # Purpose routing for background model work (compaction, titles).
+    # The user settings layer declares the selections; the entry stays empty.
+    - id: model-routing
+      name: '@deepseek-ai/dsh-model-routing'
+
     - id: jobs
       name: '@deepseek-ai/dsh-jobs-local'
 
     - id: llm-retry
       name: '@deepseek-ai/dsh-llm-retry'
 
-    # User-settings document (`$DSH_HOME/settings.yaml`, hot-reloaded): a
-    # `llm-deepseek:` or `llm-pi-ai:` section there overrides the adapter entries
-    # below without a restart, and is what the web Models page writes.
+    # User-settings documents (`$DSH_HOME/settings.yaml` plus the model-related
+    # split `model-settings.yaml`, both hot-reloaded): the `agent-default-model:`,
+    # `model-routing:`, `llm-deepseek:` and `llm-pi-ai:` sections live in the split
+    # and override the adapter entries below without a restart, and are what the
+    # web Models page writes.
     - id: settings
       name: '@deepseek-ai/dsh-settings-file'
+      config:
+        documents:
+          - path: model-settings.yaml
+            namespaces: [agent-default-model, llm-deepseek, llm-pi-ai, model-routing]
 
     # Credential sources: inherited environment over the managed
     # `$DSH_HOME/.credentials.yaml`, with project and user `.env` fallbacks.

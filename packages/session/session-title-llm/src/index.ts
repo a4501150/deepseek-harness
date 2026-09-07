@@ -7,7 +7,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage, BlockAssembler } from '@deepseek-ai/dsh-llm'
-import type { FinishReason, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { FinishReason, GenerateOptions, Message, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { SessionSeq } from '@deepseek-ai/dsh-session'
@@ -22,6 +23,7 @@ import type {
   SessionTitleProviderResult,
   SessionTitleUserMessage,
 } from '@deepseek-ai/dsh-session-title'
+import type {} from '@deepseek-ai/dsh-model-routing'
 
 /** Exact model-visible request recorded before one auxiliary title dispatch. */
 export interface SessionTitleLlmRequestEventData {
@@ -170,18 +172,32 @@ export function registerSessionTitleLlmProvider(
   })
 }
 
-/** Resolve the explicit pair or the exact route captured from `request/header`. */
+/**
+ * Resolve the explicit pair, then the deployment's routed selection for
+ * `purpose: 'session-title'`, then the exact route captured from
+ * `request/header`.
+ */
 function resolveRoute(
   config: ResolvedSessionTitleLlmConfig,
   request: SessionTitleProviderRequest,
-): SessionTitleModelProvenance {
+  routed: ModelSelection | undefined,
+): { route: SessionTitleModelProvenance; reasoningEffort?: ReasoningEffortId } {
   if (config.provider !== undefined && config.model !== undefined) {
-    return { provider: config.provider, model: config.model }
+    return { route: { provider: config.provider, model: config.model } }
+  }
+  if (routed !== undefined) {
+    return {
+      route: { provider: routed.provider, model: routed.model },
+      ...routed.reasoningEffort === undefined ? {} : { reasoningEffort: routed.reasoningEffort },
+    }
   }
   if (request.route === undefined) {
-    throw new Error('session-title-llm: no logged request route is available; configure provider and model together')
+    throw new Error(
+      'session-title-llm: no logged request route is available; configure provider and model together,'
+      + ' route session-title in the model-routing settings section, or route a request in the session first',
+    )
   }
-  return request.route
+  return { route: request.route }
 }
 
 /** Stable language-aware system instruction shared by both provider plugins. */
@@ -244,7 +260,8 @@ export async function generateSessionTitleWithLlm(
   if (inputBytes > config.maxInputBytes) {
     throw new Error(`session-title-llm: input is ${inputBytes} bytes, exceeding maxInputBytes ${config.maxInputBytes}`)
   }
-  const route = resolveRoute(config, request)
+  const routed = ctx.get('modelRouting')?.selection({ purpose: 'session-title', tier: 'smallFast' })
+  const { route, reasoningEffort } = resolveRoute(config, request, routed)
   const messages: Message[] = [createUserMessage({
     content: [{ type: 'text', text: framedInput }],
     source: { kind: 'plugin', plugin: 'dsh-session-title-llm' },
@@ -254,6 +271,7 @@ export async function generateSessionTitleWithLlm(
   const options: GenerateOptions = deepFreeze({
     provider: route.provider,
     model: route.model,
+    ...reasoningEffort === undefined ? {} : { reasoningEffort },
     messages,
     system,
     maxTokens: config.maxOutputTokens,

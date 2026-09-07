@@ -20,13 +20,14 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
-import type { ResolvedRetryPolicy, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
+import type { LlmModelPricing, ResolvedRetryPolicy, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import {
   CACHE_CONTROL_FORMATS,
   CHAT_TEMPLATE_VARS,
   MAX_TOKENS_FIELDS,
   MODALITIES,
   resolveRouteModels,
+  REASONING_SUMMARIES,
   SUPPORTED_THINKING_FORMATS,
   THINKING_LEVELS,
   THINKING_TOKEN_BUDGET_FIELDS,
@@ -37,6 +38,7 @@ import type {
   PiAiModelOverride,
   PiAiModelProfile,
   PiAiReasoningEfforts,
+  PiAiReasoningSummary,
 } from './catalog.ts'
 import { buildProvider, supportedProtocols } from './provider.ts'
 
@@ -82,6 +84,7 @@ export type {
   PiAiModelOverride,
   PiAiModelProfile,
   PiAiReasoningEfforts,
+  PiAiReasoningSummary,
   PiAiThinkingFormat,
 } from './catalog.ts'
 
@@ -147,6 +150,13 @@ export interface PiAiProviderProfile {
   defaultInput?: PiAiModality[]
   /** Provider request headers, validated against Fetch when the profile resolves; Harness attribution wins reserved names. */
   headers?: Record<string, string>
+  /**
+   * Provider-scoped environment values this route's requests read in place of
+   * the process environment: how a deployment pins an AWS region or profile, a
+   * Vertex project or location, or a proxy per route without changing the
+   * process environment every other route shares.
+   */
+  env?: Record<string, string>
   /** Provider-neutral pi-ai reasoning level. */
   reasoning?: ModelThinkingLevel
   /** Token budgets used by reasoning providers that support them. */
@@ -211,6 +221,22 @@ export interface ResolvedPiAiProviderProfile
    * own, so a catalog capability must not appear here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /**
+   * Pricing tables this profile explicitly configured, by model id; empty
+   * when no model declared rates. Surfaces through the harness's resolved
+   * model metadata so consumers can estimate spend.
+   */
+  configuredPricing: ReadonlyMap<string, LlmModelPricing>
+  /**
+   * Per-model effort defaults this profile explicitly configured, by model id;
+   * each overrides the route's `reasoning` default for that model.
+   */
+  defaultReasoningEfforts: ReadonlyMap<string, ModelThinkingLevel>
+  /**
+   * Reasoning summary modes this profile explicitly configured, by model id.
+   * The adapter applies one to the request body of a matching request.
+   */
+  configuredReasoningSummary: ReadonlyMap<string, PiAiReasoningSummary>
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -305,6 +331,16 @@ const modelFields = {
   // installed catalog's capability", while `false` disables reasoning.
   reasoningEfforts: z.union([z.const(false), reasoningEfforts]),
   compat: compatProfile,
+  // Absent materializes as `{}` exactly like an emptied block, so resolution
+  // treats both as "no rates declared" rather than refusing or defaulting.
+  pricing: z.object({
+    input: z.natural(),
+    output: z.natural(),
+    cacheRead: z.natural(),
+    cacheWrite: z.natural(),
+  }),
+  defaultReasoningEffort: z.union(THINKING_LEVELS),
+  reasoningSummary: z.union(REASONING_SUMMARIES),
 }
 
 const modelProfile: z<PiAiModelProfile> = z.object({
@@ -327,6 +363,7 @@ const profile = z.object({
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS),
   defaultInput: z.array(z.union(MODALITIES)).default([...DEFAULT_INPUT]),
   headers: z.dict(z.string()),
+  env: z.dict(z.string()),
   reasoning: z.union(THINKING_LEVELS),
   thinkingBudgets,
   cacheRetention: z.union(['none', 'short', 'long']),
@@ -475,8 +512,12 @@ export function resolveProfiles(
       requestImageMaxBytes,
       retryPolicy: resolveRetryPolicy(retryPolicy, `llm-pi-ai: provider "${provider}" retryPolicy`),
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
+      ...rest.env === undefined ? {} : { env: { ...rest.env } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog.configuredMaxTokens,
+      configuredPricing: catalog.configuredPricing,
+      defaultReasoningEfforts: catalog.defaultReasoningEfforts,
+      configuredReasoningSummary: catalog.configuredReasoningSummary,
       piProvider: buildProvider({
         provider,
         displayName,

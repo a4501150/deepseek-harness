@@ -28,6 +28,9 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../core/model-routing"
+    },
+    {
       "path": "../../interaction/commands"
     },
     {

@@ -10,6 +10,7 @@ import type {
   ContentBlock, FinishReason, GenerateOptions, Message, TokenUsage, ToolSchema,
 } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-model-routing'
 
 interface SummaryConfig {
   readonly summarizationProvider: string
@@ -135,10 +136,12 @@ export async function summarizeWithLlm(
     && agent.options.model.length > 0
     ? { provider: agent.options.provider, model: agent.options.model }
     : undefined
-  const target = configured ?? latest ?? agentTarget
+  const routed = ctx.get('modelRouting')?.selection({ purpose: 'compaction', tier: 'smallFast' })
+  const target = configured ?? routed ?? latest ?? agentTarget
+  const routedEffort = target === routed ? routed?.reasoningEffort : undefined
   if (target === undefined) {
     throw new Error(
-      'no provider/model available for summarization: set both BasicCompactionConfig summarization fields, route one request, or set both AgentOptions fields',
+      'no provider/model available for summarization: set both BasicCompactionConfig summarization fields, route compaction in the model-routing settings section, route one request, or set both AgentOptions fields',
     )
   }
 
@@ -153,6 +156,7 @@ export async function summarizeWithLlm(
   const options: GenerateOptions = {
     provider: target.provider,
     model: target.model,
+    ...routedEffort === undefined ? {} : { reasoningEffort: routedEffort },
     messages,
     ...input.system === undefined ? {} : { system: input.system },
     ...input.tools === undefined ? {} : { tools: [...input.tools] },

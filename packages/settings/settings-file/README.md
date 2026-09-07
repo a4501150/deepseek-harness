@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-settings-file` keeps every namespace's user settings in one YAML or JSON document, by default `settings.yaml` under the harness home: users can edit the document directly — changes take effect live — or write through the service, which merges concurrent edits safely. YAML writes preserve comments, anchors, and formatting on every untouched node, and a section owned by a plugin that is not loaded is never dropped. Boot fails loud on an invalid document; a live reload that fails keeps the last good sections and warns rather than taking the process down.
+`dsh-settings-file` keeps every namespace's user settings in one YAML or JSON document, by default `settings.yaml` under the harness home; configured split documents — by path and owned namespaces — move chosen sections into their own file, such as a `model-settings.yaml` holding the model-related namespaces, while the service still sees one merged document: users can edit the documents directly — changes take effect live — or write through the service, which merges concurrent edits safely. YAML writes preserve comments, anchors, and formatting on every untouched node, and a section owned by a plugin that is not loaded is never dropped. Boot fails loud on an invalid document; a live reload that fails keeps the last good sections and warns rather than taking the process down.
 
 ## Table of Contents
 
@@ -43,6 +43,7 @@ Choose it as the default user-settings store: one human-readable document that u
 |---|---|---|
 | `path` | `<harness home>/settings.yaml` | Settings document path; the extension picks the format (`.yaml`, `.yml`, or `.json`) |
 | `dshHome` | `$DSH_HOME` or `~/.dsh` | Harness home used when `path` is omitted |
+| `documents` | none | Split documents owning the listed namespaces; a relative path resolves against the primary document's directory |
 | `watch` | `true` | Watch the document and hot-publish external edits |
 | `debounceMs` | `100` | Watcher write-settle window, in milliseconds |
 
@@ -50,7 +51,7 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 ### Editing the document
 
-The document is a YAML or JSON mapping of namespace to user section. Users can edit it directly: any change takes effect automatically, and deleting the file resets every namespace to defaults and `base`. A document that exists but is invalid fails plugin load at boot — the provider never silently ignores or overwrites it. Once live, an unreadable or unparsable edit warns and keeps the last good sections, so a hand-edit mistake cannot take the process down.
+Every document is a YAML or JSON mapping of namespace to user section. Users can edit them directly: any change takes effect automatically, and deleting a file resets its sections to defaults and `base`. A routed namespace has exactly one file home — its owning document; the primary keeps every section no split owns. A routed section written outside its owner is migrated into the owner at boot (with a second copy dropped), and a hot-reload ghost is composed out with a warning rather than written back. A document that exists but is invalid fails plugin load at boot — the provider never silently ignores or overwrites it. Once live, an unreadable or unparsable edit warns and keeps the last good sections, so a hand-edit mistake cannot take the process down.
 
 ### Writing through the service
 
@@ -64,6 +65,7 @@ The lock has a 2-second acquisition deadline with exponential backoff; a contend
 - A missing document is an empty store; deleting the file returns to that state.
 - An invalid on-disk document at runtime blocks nothing but keeps the last good sections; a write refuses to overwrite it.
 - `prepareDocument()` materializes an absent document as an empty owner-only file before a native editor opens it.
+- A split configuration with one namespace owned by two documents, a split naming the primary, or a repeated split path fails at load — a section with two homes resolves by accident.
 
 -----
 
@@ -83,6 +85,7 @@ This section explains the design decisions behind the provider and points at the
 - **Writes hold a cross-process writer lock.** The read-render-rename cycle runs under a `wx`-created `<file>.lock` sibling with exponential backoff and a 2-second acquisition deadline; readers never take the lock because the rename commit is atomic.
 - **YAML edits are leaf-level diffs.** Only changed values are set and only removed keys deleted, preserving comments, anchors, and formatting on untouched nodes.
 - **Reloads and writes share one operation chain.** Watcher refreshes and persists from every namespace queue run one at a time in queue order; each render sees the text the previous operation committed.
+- **Routing gives each namespace one home.** Writes route to the owning document, boot migrates ghost sections into it, and `compose` merges the documents into the one seam document — a routed section stored elsewhere never reaches the seam.
 - **Self-write suppression by content.** The provider caches the last good text; a watcher event whose content equals the cache — its own write included — is a no-op.
 
 ### Source map

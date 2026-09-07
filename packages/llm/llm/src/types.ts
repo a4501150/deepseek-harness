@@ -336,6 +336,18 @@ export interface LlmModelReasoningInfo {
   defaultEffort?: ReasoningEffortId
 }
 
+/** Per-model request pricing in USD per million tokens, declared by the deployment that owns the route. */
+export interface LlmModelPricing {
+  /** Uncached prompt input. */
+  readonly input?: number
+  /** Generated output, reasoning included. */
+  readonly output?: number
+  /** Prompt tokens served from provider cache. */
+  readonly cacheRead?: number
+  /** Prompt tokens written to provider cache. */
+  readonly cacheWrite?: number
+}
+
 /** Exact-route model metadata resolved by its owning adapter. */
 export interface LlmResolvedModelInfo extends LlmModelInfo {
   /** Provider-owned context capacity when known. */
@@ -344,6 +356,12 @@ export interface LlmResolvedModelInfo extends LlmModelInfo {
   defaultMaxTokens?: number
   /** Adapter-owned selectable reasoning levels when exposed. */
   reasoning?: LlmModelReasoningInfo
+  /**
+   * Deployment-declared request pricing for this exact route. Absent means no
+   * pricing is configured; the harness never guesses one and never reads the
+   * pi-ai catalog's own cost metadata.
+   */
+  pricing?: LlmModelPricing
 }
 
 /**

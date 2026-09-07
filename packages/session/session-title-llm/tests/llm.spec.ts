@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import LlmRuntime, { createUserMessage, ToolCallId, isAgentLoopRequest, LlmAdapter  } from '@deepseek-ai/dsh-llm'
-import type { FinishReason, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, isAgentLoopRequest, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { FinishReason, GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import type { SessionTitleProviderRequest } from '@deepseek-ai/dsh-session-title'
@@ -12,6 +12,7 @@ import {
   SESSION_TITLE_TIMEOUT_CODE,
 } from '@deepseek-ai/dsh-session-title-llm'
 import type { SessionTitleLlmConfig } from '@deepseek-ai/dsh-session-title-llm'
+import ModelRoutingConfig from '@deepseek-ai/dsh-model-routing'
 
 class RecordingAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = []
@@ -21,6 +22,16 @@ class RecordingAdapter extends LlmAdapter {
     private readonly onDispatch?: () => void,
   ) {
     super()
+  }
+
+  // Declared so a routed selection's reasoning effort reaches the request instead of failing validation.
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({
+      provider,
+      id: model,
+      name: model,
+      reasoning: { efforts: [{ id: ReasoningEffortId('low'), name: 'Low' }] },
+    })
   }
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -202,6 +213,45 @@ describe('generateSessionTitleWithLlm', () => {
       provider: 'explicit-route',
       model: 'explicit-model',
     })
+  })
+
+  it('routes a purpose selection over the logged route and carries its effort', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(ModelRoutingConfig, {
+      purposes: { sessionTitle: { provider: 'routed-route', model: 'routed-model', reasoningEffort: 'low' } },
+    })
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['routed-route'], adapter)
+
+    const withRoute = request(ctx)
+    await generateSessionTitleWithLlm(
+      ctx, resolveSessionTitleLlmConfig(CONFIG), withRoute, withRoute.messages, TITLE_PROVIDER,
+    )
+
+    expect(adapter.requests[0]).toMatchObject({
+      provider: 'routed-route', model: 'routed-model', reasoningEffort: 'low',
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('resolves a logged-routeless request from the small-fast tier', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(ModelRoutingConfig, { smallFast: { provider: 'tier-route', model: 'tier-model' } })
+    const adapter = new RecordingAdapter(SCRIPT)
+    ctx.llm.registerAdapter(['tier-route'], adapter)
+
+    const routeless = requestWithoutRoute(ctx)
+    await generateSessionTitleWithLlm(
+      ctx, resolveSessionTitleLlmConfig(CONFIG), routeless, routeless.messages, TITLE_PROVIDER,
+    )
+
+    expect(adapter.requests[0]).toMatchObject({ provider: 'tier-route', model: 'tier-model' })
+    expect('reasoningEffort' in (adapter.requests[0] ?? {})).toBe(false)
+    await ctx.fiber.dispose()
   })
 
   it('requires every deployment limit and a complete optional route pair', () => {

@@ -14,6 +14,7 @@ import type {
   GenerateOptions,
   ImageAttachmentAccess,
   LlmModelInfo,
+  LlmModelPricing,
   LlmProviderInfo,
   PreparedAdapterCall,
   LlmResolvedModelInfo,
@@ -63,6 +64,11 @@ export interface DeepSeekCatalogModel {
   imagePixelBudget?: number | 'low'
   /** Encoded-byte target for one deterministic request preview; the smallest quality-ladder output is used when no quality fits. */
   imageMaxBytes?: number
+  /**
+   * Request pricing in USD per million tokens, surfaced through resolved model
+   * metadata so consumers can estimate spend; omission declares no rates.
+   */
+  pricing?: LlmModelPricing
 }
 
 /**
@@ -407,6 +413,7 @@ export class DeepSeekAdapter extends LlmAdapter {
         : modelInfo(provider, configured),
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
+      ...configured?.pricing === undefined ? {} : { pricing: configured.pricing },
       ...connection.defaults.thinking === 'disabled'
         ? {
           reasoning: {

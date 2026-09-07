@@ -26,6 +26,10 @@
       "types": "./lib/types/types.d.ts",
       "default": "./lib/types/types.js"
     },
+    "./pricing": {
+      "types": "./lib/types/pricing.d.ts",
+      "default": "./lib/types/pricing.js"
+    },
     "./brand": {
       "types": "./lib/types/brand.d.ts",
       "default": "./lib/types/brand.js"

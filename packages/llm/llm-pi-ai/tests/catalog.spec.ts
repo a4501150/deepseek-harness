@@ -684,6 +684,69 @@ describe('per-model reasoning efforts', () => {
   })
 })
 
+describe('per-model default reasoning effort', () => {
+  /** One hand-declared route holding exactly the given profiles. */
+  function declared(...models: LlmPiAi.PiAiModelProfile[]) {
+    return resolveProfiles({ 'acme-gateway': { api: 'openai-completions', baseURL: 'https://acme.test', models } })
+  }
+
+  it('records a declared default that overrides the route reasoning field', () => {
+    const profile = resolveProfiles({
+      'acme-gateway': {
+        api: 'openai-completions',
+        baseURL: 'https://acme.test',
+        reasoning: 'low',
+        models: [{ id: 'think', reasoningEfforts: { low: 'low', high: 'high' }, defaultReasoningEffort: 'high' }],
+      },
+    }).get('acme-gateway')
+    // The route default stays a route field; the map is what overrides it for
+    // this one model on the request path and in resolved metadata.
+    expect(profile?.defaultReasoningEfforts.get('think')).toBe('high')
+  })
+
+  it('refuses a default effort the model does not offer', () => {
+    expect(() => declared({ id: 'think', reasoningEfforts: { low: 'low', high: 'high' }, defaultReasoningEffort: 'xhigh' }))
+      .toThrow(/defaultReasoningEffort "xhigh".*does not offer; the model offers low, high/)
+  })
+
+  it('refuses a default effort on a model that offers no reasoning level', () => {
+    expect(() => declared({ id: 'flat', reasoningEfforts: false, defaultReasoningEffort: 'high' }))
+      .toThrow(/defaultReasoningEffort "high".*the model offers no reasoning level/)
+    // `off` names "send nothing", not a level, so it cannot be a default.
+    expect(() => declared({ id: 'think', reasoningEfforts: { off: null, high: 'high' }, defaultReasoningEffort: 'off' }))
+      .toThrow(/does not offer/)
+  })
+})
+
+describe('per-model reasoning summary mode', () => {
+  /** Resolve one hand-declared route on the given protocol holding one model. */
+  function declareOn(api: string, model: LlmPiAi.PiAiModelProfile) {
+    return resolveProfiles({ 'acme-gateway': { api, baseURL: 'https://acme.test', models: [model] } })
+  }
+
+  it('records the mode for a model on a Responses route', () => {
+    const profile = resolveProfiles({
+      'acme-gateway': {
+        api: 'openai-responses',
+        baseURL: 'https://acme.test',
+        models: [
+          { id: 'r', reasoningEfforts: { low: 'low' }, reasoningSummary: 'detailed' },
+          { id: 'quiet', reasoningEfforts: { low: 'low' }, reasoningSummary: 'off' },
+        ],
+      },
+    }).get('acme-gateway')
+    expect(profile?.configuredReasoningSummary.get('r')).toBe('detailed')
+    expect(profile?.configuredReasoningSummary.get('quiet')).toBe('off')
+  })
+
+  it('refuses a mode on a route whose protocol never reads a reasoning parameter', () => {
+    const refused = 'reasoningSummary, which only openai-responses, azure-openai-responses, openai-codex-responses read;'
+      + ' this model resolves to the "openai-completions" protocol'
+    expect(() => declareOn('openai-completions', { id: 'c', reasoningEfforts: { low: 'low' }, reasoningSummary: 'auto' }))
+      .toThrow(refused)
+  })
+})
+
 describe('modelOverrides', () => {
   const deepseekModel = (): Model<Api> => {
     const [model] = getBuiltinModels('deepseek')
